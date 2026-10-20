@@ -1,4 +1,4 @@
-"""FastAPI ASGI proxy application for OpenAI-compatible chat completions."""
+"""FastAPI ASGI proxy application with MinHash fuzzy matching and SQLite cache."""
 
 import time
 from typing import Annotated, Optional
@@ -24,16 +24,20 @@ def get_upstream(request: Request) -> UpstreamProvider:
 def create_app(
     cache: Optional[SQLiteCache] = None,
     upstream: Optional[UpstreamProvider] = None,
+    fuzzy_matching: bool = True,
+    similarity_threshold: float = 0.85,
 ) -> FastAPI:
     """Factory function configuring and returning the FastAPI proxy application."""
     app = FastAPI(
         title="PromptMemo",
-        description="Fast local caching proxy for LLM APIs with exact-match SQLite storage.",
+        description="Fast local caching proxy for LLM APIs with normalized MinHash fuzzy matching.",
         version="0.1.0",
     )
 
     app.state.cache = cache if cache is not None else SQLiteCache(":memory:")
     app.state.upstream = upstream if upstream is not None else MockUpstreamProvider()
+    app.state.fuzzy_matching = fuzzy_matching
+    app.state.similarity_threshold = similarity_threshold
 
     @app.get("/", tags=["Health"])
     @app.get("/health", tags=["Health"])
@@ -50,15 +54,17 @@ def create_app(
     async def create_chat_completion(
         payload: ChatCompletionRequest,
         response: Response,
+        request: Request,
         cache_dep: Annotated[SQLiteCache, Depends(get_cache)],
         upstream_dep: Annotated[UpstreamProvider, Depends(get_upstream)],
     ) -> ChatCompletionResponse:
-        """Transparently intercepts chat completion requests.
+        """Intercepts chat completion requests with exact-match and fuzzy MinHash matching.
 
-        Computes canonical prompt normalization and SHA-256 hash:
-        - Cache HIT: returns cached response with X-Cache: HIT.
-        - Cache MISS: generates response via upstream provider, persists in cache,
-          and returns response with X-Cache: MISS.
+        - Exact Cache HIT: returns cached response with X-Cache: HIT.
+        - Fuzzy Cache HIT: returns nearest cached response with X-Cache: HIT-FUZZY and
+          X-Cache-Similarity header when similarity >= threshold.
+        - Cache MISS: generates response via upstream provider, persists in cache with
+          its MinHash signature, and returns response with X-Cache: MISS.
         """
         if payload.stream:
             raise HTTPException(
@@ -73,15 +79,32 @@ def create_app(
             temperature=payload.temperature,
         )
 
+        # 1. Exact match lookup
         cached_response = cache_dep.get(prompt_hash)
         if cached_response is not None:
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
             response.headers["X-Cache"] = "HIT"
             response.headers["X-Prompt-Hash"] = prompt_hash
             response.headers["X-Latency-Ms"] = f"{elapsed_ms:.2f}"
+            response.headers["X-Cache-Similarity"] = "1.0000"
             return cached_response
 
-        # Cache miss: query upstream provider
+        # 2. Fuzzy match lookup if enabled
+        if getattr(request.app.state, "fuzzy_matching", True):
+            threshold = getattr(request.app.state, "similarity_threshold", 0.85)
+            fuzzy_result = cache_dep.find_fuzzy_match(
+                query=payload,
+                similarity_threshold=threshold,
+            )
+            if fuzzy_result is not None:
+                elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+                response.headers["X-Cache"] = "HIT-FUZZY"
+                response.headers["X-Prompt-Hash"] = fuzzy_result.prompt_hash
+                response.headers["X-Latency-Ms"] = f"{elapsed_ms:.2f}"
+                response.headers["X-Cache-Similarity"] = f"{fuzzy_result.similarity:.4f}"
+                return fuzzy_result.response
+
+        # 3. Cache miss: query upstream provider
         completion_response = upstream_dep.generate(payload)
 
         # Store in SQLite cache

@@ -1,7 +1,7 @@
 # PromptMemo
 
 <!-- builder:badges:start -->
-[![CI](https://github.com/aman-abeb/prompt-memo/actions/workflows/ci.yml/badge.svg)](https://github.com/aman-abeb/prompt-memo/actions/workflows/ci.yml) ![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white) ![License: MIT](https://img.shields.io/badge/license-MIT-green)
+[![CI](https://github.com/aman-abeb/prompt-memo/actions/workflows/ci.yml/badge.svg)](https://github.com/aman-abeb/prompt-memo/actions/workflows/ci.yml) ![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white) ![FastAPI](https://img.shields.io/badge/fastapi-009688?logo=fastapi&logoColor=white) ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 <!-- builder:badges:end -->
 
 Fast local caching proxy for LLM APIs with normalized MinHash fuzzy matching, token savings analytics, and zero-network mock replay.
@@ -9,9 +9,11 @@ Fast local caching proxy for LLM APIs with normalized MinHash fuzzy matching, to
 ## Features
 
 - **OpenAI-Compatible Schemas**: Standard chat completion models (`ChatCompletionRequest`, `ChatCompletionResponse`, `Message`, and `Usage`).
-- **FastAPI ASGI Proxy**: Transparent `/v1/chat/completions` proxy routing with `X-Cache`, `X-Prompt-Hash`, and `X-Latency-Ms` headers.
+- **Multi-Tier Fast Proxy**: Transparent `/v1/chat/completions` proxy routing with `X-Cache` (`HIT`, `HIT-FUZZY`, `MISS`), `X-Prompt-Hash`, `X-Latency-Ms`, and `X-Cache-Similarity` headers.
 - **Canonical Prompt Normalization**: Unicode NFKC normalization, whitespace collapse, and structured key serialization ensuring identical semantic prompts map to the same cache key.
+- **MinHash Fuzzy Similarity Matching**: Carter-Wegman 64-permutation MinHash shingling with configurable Jaccard similarity threshold (e.g. `>= 0.85`) for near-duplicate prompt matching across punctuation, typos, and phrasing variations.
 - **Deterministic SHA-256 Hashing**: Model-aware, parameter-configurable hashing for exact-match retrieval.
+- **LRU & TTL Eviction Policies**: Configurable maximum cache capacity with deterministic least-recently-used eviction and time-to-live expiration.
 - **SQLite Storage Engine**: Thread-safe SQLite persistence layer with connection pooling, hit counting, and token savings analytics.
 - **Deterministic Mock Upstream**: Offline LLM provider generating reproducible OpenAI-compatible responses without external network calls.
 - **Zero-Network Ready**: Fully offline test harness with deterministic behavior and no external network calls required.
@@ -72,9 +74,9 @@ Metrics Summary:
 ## How it works
 
 1. **Message Sanitization**: Messages undergo unicode normalization (`unicodedata.normalize("NFKC", ...)`), uniform line break translation, and whitespace collapse while preserving essential line breaks.
-2. **Canonical Serialization**: Prompts are converted to a sorted, unambiguous key format combining the target model and sequenced messages (`role:content`).
-3. **Hash Generation**: The serialized representation is hashed using SHA-256 to produce an exact lookup key.
-4. **SQLite Cache Storage**: Exact hashes index persisted completions along with token usage and access timestamps in SQLite.
+2. **Canonical Serialization & Exact Lookup**: Prompts are converted to a sorted, unambiguous key format combining the target model and sequenced messages (`role:content`), then hashed with SHA-256 for exact $O(1)$ lookups returning `X-Cache: HIT`.
+3. **MinHash Fuzzy Similarity Matching**: If exact lookup misses, the query is shingled into k-grams and indexed into a 64-permutation MinHash signature. Candidate records for the target model are compared; if the estimated Jaccard similarity meets the configured threshold (e.g. `>= 0.85`), the cached completion is returned with `X-Cache: HIT-FUZZY` and `X-Cache-Similarity`.
+4. **TTL & LRU Eviction**: Stored completions maintain access timestamps and optional expiration deadlines (`expires_at`). Least-recently-accessed entries are automatically purged when capacity limits (`max_entries`) are reached.
 5. **Deterministic Mock Fallback**: When upstream network access is disabled, `MockUpstreamProvider` simulates LLM responses deterministically.
 
 ## Running tests

@@ -1,6 +1,12 @@
 """PromptMemo: Local caching proxy for LLM APIs."""
 
 from prompt_memo.app import create_app
+from prompt_memo.minhash import (
+    MinHasher,
+    compute_shingles,
+    estimate_similarity,
+    exact_jaccard,
+)
 from prompt_memo.models import (
     ChatCompletionChoice,
     ChatCompletionRequest,
@@ -22,4 +28,8 @@ __all__ = [
     "Usage",
     "SQLiteCache",
     "MockUpstreamProvider",
+    "MinHasher",
+    "compute_shingles",
+    "exact_jaccard",
+    "estimate_similarity",
 ]
