@@ -4,7 +4,6 @@
 [![CI](https://github.com/aman-abeb/prompt-memo/actions/workflows/ci.yml/badge.svg)](https://github.com/aman-abeb/prompt-memo/actions/workflows/ci.yml) ![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white) ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 <!-- builder:badges:end -->
 
-
 Fast local caching proxy for LLM APIs with normalized MinHash fuzzy matching, token savings analytics, and zero-network mock replay.
 
 ## Features
@@ -12,6 +11,8 @@ Fast local caching proxy for LLM APIs with normalized MinHash fuzzy matching, to
 - **OpenAI-Compatible Schemas**: Standard chat completion models (`ChatCompletionRequest`, `ChatCompletionResponse`, `Message`, and `Usage`).
 - **Canonical Prompt Normalization**: Unicode NFKC normalization, whitespace collapse, and structured key serialization ensuring identical semantic prompts map to the same cache key.
 - **Deterministic SHA-256 Hashing**: Model-aware, parameter-configurable hashing for exact-match retrieval.
+- **SQLite Storage Engine**: Thread-safe SQLite persistence layer with connection pooling, hit counting, and token savings analytics.
+- **Deterministic Mock Upstream**: Offline LLM provider generating reproducible OpenAI-compatible responses without external network calls.
 - **Zero-Network Ready**: Fully offline test harness with deterministic behavior and no external network calls required.
 
 ## Quickstart
@@ -24,7 +25,7 @@ pip install -r requirements.txt
 
 ### Running the Demo
 
-Execute the entrypoint directly to observe canonical normalization and prompt hashing:
+Execute the entrypoint directly to observe canonical normalization, prompt hashing, and SQLite caching with mock replay:
 
 ```bash
 python main.py
@@ -36,27 +37,34 @@ Running `python main.py` produces the following output:
 
 ```text
 PromptMemo CLI Demo
-===================
-Raw prompt input:
-  Role: user
-  Content: '  Hello   world!  \n\n How are you doing?   '
-
+====================
 Canonical representation:
   model:gpt-4o
+  role:system:You are a helpful assistant.
   role:user:Hello world!
   How are you doing?
 
-Exact SHA-256 Hash:
-  e346513ddc4caaf7b86e0fc25102a7b8e50b73c467aae162b7ae4d039f99aa9f
+Exact SHA-256 Hash: e346513ddc4caaf7b86e0fc25102a7b8e50b73c467aae162b7ae4d039f99aa9f
+Invariant Match: SUCCESS
 
-Whitespace-invariant match verification: SUCCESS (hashes match!)
+Cache lookup #1 (before set): MISS
+Upstream generated reply: '[Mock:gpt-4o] Echoing query: 'Hello world!
+How are you doing?' (seed: e346513ddc4c)'
+Cache lookup #2 (whitespace-equivalent): HIT
+
+Metrics Summary:
+  Cached Entries: 1
+  Total Hits:     1
+  Tokens Saved:   30
 ```
 
 ## How it works
 
 1. **Message Sanitization**: Messages undergo unicode normalization (`unicodedata.normalize("NFKC", ...)`), uniform line break translation, and whitespace collapse while preserving essential line breaks.
 2. **Canonical Serialization**: Prompts are converted to a sorted, unambiguous key format combining the target model and sequenced messages (`role:content`).
-3. **Hash Generation**: The serialized representation is hashed using SHA-256 to produce an exact lookup key for downstream storage layers (e.g. SQLite).
+3. **Hash Generation**: The serialized representation is hashed using SHA-256 to produce an exact lookup key.
+4. **SQLite Cache Storage**: Exact hashes index persisted completions along with token usage and access timestamps in SQLite.
+5. **Deterministic Mock Fallback**: When upstream network access is disabled, `MockUpstreamProvider` simulates LLM responses deterministically.
 
 ## Running tests
 
