@@ -88,11 +88,11 @@ pytest
 <!-- builder:roadmap:start -->
 ## Status
 
-**In active development:** 0 of 3 milestones done.
+**In active development:** 1 of 3 milestones done.
 
 ## Roadmap
 
-- [ ] **Core proxy routing & exact-match SQLite cache**: Build the ASGI application with /v1/chat/completions endpoint, deterministic mock upstream provider, exact normalized prompt hashing, SQLite persistence layer, and unit tests using TestClient.
+- [x] **Core proxy routing & exact-match SQLite cache**: Build the ASGI application with /v1/chat/completions endpoint, deterministic mock upstream provider, exact normalized prompt hashing, SQLite persistence layer, and unit tests using TestClient.
 - [ ] **Fuzzy MinHash shingling & LRU eviction**: Implement k-shingle MinHash indexing for fuzzy prompt similarity matching against a configurable similarity threshold, add TTL/LRU cache eviction policies, and benchmark similarity retrieval accuracy.
 - [ ] **Streaming SSE replay, metrics endpoint & CLI demo**: Add Server-Sent Events (SSE) streaming replay for cached chunk responses, real upstream HTTP forwarding fallback via env var, /v1/metrics analytics endpoint for token/cost accounting, and an end-to-end integration test suite.
 <!-- builder:roadmap:end -->
