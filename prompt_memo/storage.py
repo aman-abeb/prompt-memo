@@ -33,13 +33,12 @@ class SQLiteCache:
     def __init__(self, db_path: str = ":memory:") -> None:
         self.db_path = db_path
         self._lock = threading.RLock()
-        self._local = threading.local()
+        self._conn: Optional[sqlite3.Connection] = None
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
-        """Retrieves or creates a thread-local SQLite connection."""
-        conn = getattr(self._local, "conn", None)
-        if conn is None:
+        """Retrieves or creates the SQLite connection."""
+        if self._conn is None:
             conn = sqlite3.connect(
                 self.db_path,
                 check_same_thread=False,
@@ -50,8 +49,8 @@ class SQLiteCache:
             if self.db_path != ":memory:":
                 conn.execute("PRAGMA journal_mode = WAL;")
             conn.execute("PRAGMA synchronous = NORMAL;")
-            self._local.conn = conn
-        return conn
+            self._conn = conn
+        return self._conn
 
     @contextmanager
     def _cursor(self) -> Generator[sqlite3.Cursor, None, None]:
@@ -248,8 +247,8 @@ class SQLiteCache:
             }
 
     def close(self) -> None:
-        """Closes the active connection for the current thread if open."""
-        conn = getattr(self._local, "conn", None)
-        if conn is not None:
-            conn.close()
-            self._local.conn = None
+        """Closes the active connection if open."""
+        with self._lock:
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None

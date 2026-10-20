@@ -9,6 +9,7 @@ Fast local caching proxy for LLM APIs with normalized MinHash fuzzy matching, to
 ## Features
 
 - **OpenAI-Compatible Schemas**: Standard chat completion models (`ChatCompletionRequest`, `ChatCompletionResponse`, `Message`, and `Usage`).
+- **FastAPI ASGI Proxy**: Transparent `/v1/chat/completions` proxy routing with `X-Cache`, `X-Prompt-Hash`, and `X-Latency-Ms` headers.
 - **Canonical Prompt Normalization**: Unicode NFKC normalization, whitespace collapse, and structured key serialization ensuring identical semantic prompts map to the same cache key.
 - **Deterministic SHA-256 Hashing**: Model-aware, parameter-configurable hashing for exact-match retrieval.
 - **SQLite Storage Engine**: Thread-safe SQLite persistence layer with connection pooling, hit counting, and token savings analytics.
@@ -29,6 +30,16 @@ Execute the entrypoint directly to observe canonical normalization, prompt hashi
 
 ```bash
 python main.py
+```
+
+### Running the Proxy Server
+
+Start the ASGI proxy server locally:
+
+```bash
+python main.py --serve
+# or
+uvicorn main:app --port 8000
 ```
 
 ## Example

@@ -1,13 +1,17 @@
 """PromptMemo runnable entrypoint and quickstart demonstration."""
 
 import sys
+from prompt_memo.app import create_app
 from prompt_memo.models import ChatCompletionRequest, Message
 from prompt_memo.normalizer import build_canonical_representation, hash_prompt
 from prompt_memo.storage import SQLiteCache
 from prompt_memo.upstream import MockUpstreamProvider
 
+# ASGI application instance for uvicorn (e.g. uvicorn main:app)
+app = create_app()
 
-def main() -> None:
+
+def run_demo() -> None:
     """Runs a quick local verification of normalization, mock upstream, and SQLite caching."""
     model = "gpt-4o"
     raw_messages = [
@@ -56,6 +60,15 @@ def main() -> None:
     print(f"  Cached Entries: {metrics['total_entries']}")
     print(f"  Total Hits:     {metrics['total_hits']}")
     print(f"  Tokens Saved:   {metrics['saved_total_tokens']}")
+
+
+def main() -> None:
+    """Main CLI entrypoint. Starts server if --serve flag passed, else runs demo."""
+    if "--serve" in sys.argv or "-s" in sys.argv:
+        import uvicorn
+        uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=False)
+    else:
+        run_demo()
 
 
 if __name__ == "__main__":
