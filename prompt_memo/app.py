@@ -1,11 +1,19 @@
-"""FastAPI ASGI proxy application with MinHash fuzzy matching and SQLite cache."""
+"""FastAPI ASGI proxy application with MinHash fuzzy matching, SQLite cache, and analytics."""
 
 import time
 from typing import Annotated, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 
-from prompt_memo.models import ChatCompletionRequest, ChatCompletionResponse
+from prompt_memo.models import (
+    DEFAULT_MODEL_PRICING,
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    MetricsResponse,
+    ModelMetrics,
+    ModelPricing,
+    get_model_pricing,
+)
 from prompt_memo.normalizer import build_canonical_representation, hash_prompt
 from prompt_memo.storage import SQLiteCache
 from prompt_memo.upstream import MockUpstreamProvider, UpstreamProvider
@@ -21,16 +29,22 @@ def get_upstream(request: Request) -> UpstreamProvider:
     return request.app.state.upstream
 
 
+def get_pricing(request: Request) -> dict[str, ModelPricing]:
+    """Dependency provider for the model pricing configuration stored on app state."""
+    return getattr(request.app.state, "pricing", DEFAULT_MODEL_PRICING)
+
+
 def create_app(
     cache: Optional[SQLiteCache] = None,
     upstream: Optional[UpstreamProvider] = None,
     fuzzy_matching: bool = True,
     similarity_threshold: float = 0.85,
+    pricing: Optional[dict[str, ModelPricing]] = None,
 ) -> FastAPI:
     """Factory function configuring and returning the FastAPI proxy application."""
     app = FastAPI(
         title="PromptMemo",
-        description="Fast local caching proxy for LLM APIs with normalized MinHash fuzzy matching.",
+        description="Fast local caching proxy for LLM APIs with normalized MinHash fuzzy matching and savings analytics.",
         version="0.1.0",
     )
 
@@ -38,12 +52,63 @@ def create_app(
     app.state.upstream = upstream if upstream is not None else MockUpstreamProvider()
     app.state.fuzzy_matching = fuzzy_matching
     app.state.similarity_threshold = similarity_threshold
+    app.state.pricing = pricing if pricing is not None else DEFAULT_MODEL_PRICING.copy()
 
     @app.get("/", tags=["Health"])
     @app.get("/health", tags=["Health"])
     async def health_check() -> dict[str, str]:
         """Service health check endpoint."""
         return {"status": "ok", "service": "prompt-memo", "version": "0.1.0"}
+
+    @app.get(
+        "/v1/metrics",
+        response_model=MetricsResponse,
+        summary="Get cache analytics, token savings, and cost accounting",
+        tags=["Metrics"],
+    )
+    async def get_metrics_endpoint(
+        cache_dep: Annotated[SQLiteCache, Depends(get_cache)],
+        pricing_dep: Annotated[dict[str, ModelPricing], Depends(get_pricing)],
+    ) -> MetricsResponse:
+        """Returns comprehensive cache metrics, hit rates, token savings, and estimated dollar savings."""
+        stats = cache_dep.get_stats()
+        by_model_data: dict[str, ModelMetrics] = {}
+        total_dollar_savings = 0.0
+
+        for model_name, m_stats in stats.get("by_model", {}).items():
+            model_pricing = get_model_pricing(model_name, pricing_dep)
+            dollar_saved = model_pricing.compute_cost(
+                prompt_tokens=m_stats["saved_prompt_tokens"],
+                completion_tokens=m_stats["saved_completion_tokens"],
+            )
+            total_dollar_savings += dollar_saved
+            by_model_data[model_name] = ModelMetrics(
+                entries=m_stats["entries"],
+                total_hits=m_stats["total_hits"],
+                exact_hits=m_stats["exact_hits"],
+                fuzzy_hits=m_stats["fuzzy_hits"],
+                total_misses=m_stats["total_misses"],
+                saved_prompt_tokens=m_stats["saved_prompt_tokens"],
+                saved_completion_tokens=m_stats["saved_completion_tokens"],
+                saved_total_tokens=m_stats["saved_total_tokens"],
+                estimated_dollar_savings=round(dollar_saved, 6),
+            )
+
+        return MetricsResponse(
+            total_entries=stats["total_entries"],
+            total_requests=stats["total_requests"],
+            total_hits=stats["total_hits"],
+            exact_hits=stats["exact_hits"],
+            fuzzy_hits=stats["fuzzy_hits"],
+            total_misses=stats["total_misses"],
+            hit_rate=round(stats["hit_rate"], 4),
+            saved_prompt_tokens=stats["saved_prompt_tokens"],
+            saved_completion_tokens=stats["saved_completion_tokens"],
+            saved_total_tokens=stats["saved_total_tokens"],
+            estimated_dollar_savings=round(total_dollar_savings, 6),
+            by_model=by_model_data,
+            pricing=pricing_dep,
+        )
 
     @app.post(
         "/v1/chat/completions",
@@ -104,7 +169,8 @@ def create_app(
                 response.headers["X-Cache-Similarity"] = f"{fuzzy_result.similarity:.4f}"
                 return fuzzy_result.response
 
-        # 3. Cache miss: query upstream provider
+        # 3. Cache miss: record miss and query upstream provider
+        cache_dep.record_miss(payload.model)
         completion_response = upstream_dep.generate(payload)
 
         # Store in SQLite cache

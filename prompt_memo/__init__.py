@@ -8,11 +8,17 @@ from prompt_memo.minhash import (
     exact_jaccard,
 )
 from prompt_memo.models import (
+    DEFAULT_MODEL_PRICING,
+    FALLBACK_MODEL_PRICING,
     ChatCompletionChoice,
     ChatCompletionRequest,
     ChatCompletionResponse,
     Message,
+    MetricsResponse,
+    ModelMetrics,
+    ModelPricing,
     Usage,
+    get_model_pricing,
 )
 from prompt_memo.storage import SQLiteCache
 from prompt_memo.upstream import MockUpstreamProvider
@@ -26,6 +32,12 @@ __all__ = [
     "ChatCompletionChoice",
     "Message",
     "Usage",
+    "ModelPricing",
+    "ModelMetrics",
+    "MetricsResponse",
+    "DEFAULT_MODEL_PRICING",
+    "FALLBACK_MODEL_PRICING",
+    "get_model_pricing",
     "SQLiteCache",
     "MockUpstreamProvider",
     "MinHasher",

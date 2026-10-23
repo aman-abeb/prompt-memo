@@ -115,6 +115,16 @@ class SQLiteCache:
                 );
                 """
             )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS cache_stats (
+                    metric_name TEXT NOT NULL,
+                    model TEXT NOT NULL DEFAULT '',
+                    count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(metric_name, model)
+                );
+                """
+            )
             # Schema migration verification
             cur.execute("PRAGMA table_info(prompt_cache);")
             columns = {row["name"] for row in cur.fetchall()}
@@ -144,6 +154,19 @@ class SQLiteCache:
                 CREATE INDEX IF NOT EXISTS idx_prompt_cache_model
                 ON prompt_cache(model);
                 """
+            )
+
+    def record_miss(self, model: str = "") -> None:
+        """Records a cache miss for the specified model in cache_stats."""
+        clean_model = model.strip() if model else ""
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO cache_stats (metric_name, model, count)
+                VALUES ('miss', ?, 1)
+                ON CONFLICT(metric_name, model) DO UPDATE SET count = count + 1;
+                """,
+                (clean_model,),
             )
 
     def get(self, prompt_hash: str) -> Optional[ChatCompletionResponse]:
@@ -444,8 +467,9 @@ class SQLiteCache:
             return cur.rowcount > 0
 
     def clear(self) -> int:
-        """Clears all entries from the cache table. Returns deleted row count."""
+        """Clears all entries from cache and resets stats counters. Returns deleted row count."""
         with self._cursor() as cur:
+            cur.execute("DELETE FROM cache_stats;")
             cur.execute("DELETE FROM prompt_cache;")
             return cur.rowcount
 
@@ -456,13 +480,16 @@ class SQLiteCache:
             row = cur.fetchone()
             return int(row["total"]) if row else 0
 
-    def get_metrics(self) -> dict[str, Any]:
-        """Aggregates cache performance metrics including hits and tokens saved."""
+    def get_stats(self) -> dict[str, Any]:
+        """Aggregates cache performance metrics including exact vs fuzzy hit breakdowns."""
         with self._cursor() as cur:
+            cur.execute("SELECT COUNT(*) as total_entries FROM prompt_cache;")
+            row_cnt = cur.fetchone()
+            total_entries = int(row_cnt["total_entries"]) if row_cnt else 0
+
             cur.execute(
                 """
                 SELECT
-                    COUNT(*) as total_entries,
                     COALESCE(SUM(hit_count), 0) as total_hits,
                     COALESCE(SUM(fuzzy_hit_count), 0) as fuzzy_hits,
                     COALESCE(SUM(prompt_tokens * hit_count), 0) as saved_prompt_tokens,
@@ -471,25 +498,104 @@ class SQLiteCache:
                 FROM prompt_cache;
                 """
             )
-            row = cur.fetchone()
-            if not row:
-                return {
-                    "total_entries": 0,
-                    "total_hits": 0,
-                    "fuzzy_hits": 0,
-                    "saved_prompt_tokens": 0,
-                    "saved_completion_tokens": 0,
-                    "saved_total_tokens": 0,
+            agg = cur.fetchone()
+            total_hits = int(agg["total_hits"]) if agg else 0
+            fuzzy_hits = int(agg["fuzzy_hits"]) if agg else 0
+            exact_hits = total_hits - fuzzy_hits
+            saved_prompt_tokens = int(agg["saved_prompt_tokens"]) if agg else 0
+            saved_completion_tokens = int(agg["saved_completion_tokens"]) if agg else 0
+            saved_total_tokens = int(agg["saved_total_tokens"]) if agg else 0
+
+            cur.execute(
+                """
+                SELECT COALESCE(SUM(count), 0) as total_misses
+                FROM cache_stats
+                WHERE metric_name = 'miss';
+                """
+            )
+            miss_row = cur.fetchone()
+            total_misses = int(miss_row["total_misses"]) if miss_row else 0
+
+            total_requests = total_hits + total_misses
+            hit_rate = (total_hits / total_requests) if total_requests > 0 else 0.0
+
+            # Per-model breakdown
+            cur.execute(
+                """
+                SELECT
+                    model,
+                    COUNT(*) as entries,
+                    COALESCE(SUM(hit_count), 0) as hits,
+                    COALESCE(SUM(fuzzy_hit_count), 0) as fuzzy_hits,
+                    COALESCE(SUM(prompt_tokens * hit_count), 0) as saved_prompt_tokens,
+                    COALESCE(SUM(completion_tokens * hit_count), 0) as saved_completion_tokens,
+                    COALESCE(SUM(total_tokens * hit_count), 0) as saved_total_tokens
+                FROM prompt_cache
+                GROUP BY model;
+                """
+            )
+            model_rows = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT model, count as misses
+                FROM cache_stats
+                WHERE metric_name = 'miss' AND model != '';
+                """
+            )
+            miss_by_model = {row["model"]: int(row["misses"]) for row in cur.fetchall()}
+
+            by_model: dict[str, dict[str, Any]] = {}
+            for r in model_rows:
+                m_name = r["model"]
+                m_hits = int(r["hits"])
+                m_fuzzy = int(r["fuzzy_hits"])
+                m_exact = m_hits - m_fuzzy
+                m_prompt_tok = int(r["saved_prompt_tokens"])
+                m_comp_tok = int(r["saved_completion_tokens"])
+                m_total_tok = int(r["saved_total_tokens"])
+                m_misses = miss_by_model.get(m_name, 0)
+                by_model[m_name] = {
+                    "entries": int(r["entries"]),
+                    "total_hits": m_hits,
+                    "exact_hits": m_exact,
+                    "fuzzy_hits": m_fuzzy,
+                    "total_misses": m_misses,
+                    "saved_prompt_tokens": m_prompt_tok,
+                    "saved_completion_tokens": m_comp_tok,
+                    "saved_total_tokens": m_total_tok,
                 }
 
+            for m_name, m_misses in miss_by_model.items():
+                if m_name not in by_model:
+                    by_model[m_name] = {
+                        "entries": 0,
+                        "total_hits": 0,
+                        "exact_hits": 0,
+                        "fuzzy_hits": 0,
+                        "total_misses": m_misses,
+                        "saved_prompt_tokens": 0,
+                        "saved_completion_tokens": 0,
+                        "saved_total_tokens": 0,
+                    }
+
             return {
-                "total_entries": int(row["total_entries"]),
-                "total_hits": int(row["total_hits"]),
-                "fuzzy_hits": int(row["fuzzy_hits"]),
-                "saved_prompt_tokens": int(row["saved_prompt_tokens"]),
-                "saved_completion_tokens": int(row["saved_completion_tokens"]),
-                "saved_total_tokens": int(row["saved_total_tokens"]),
+                "total_entries": total_entries,
+                "total_requests": total_requests,
+                "total_hits": total_hits,
+                "exact_hits": exact_hits,
+                "fuzzy_hits": fuzzy_hits,
+                "total_misses": total_misses,
+                "hit_rate": hit_rate,
+                "saved_prompt_tokens": saved_prompt_tokens,
+                "saved_completion_tokens": saved_completion_tokens,
+                "saved_total_tokens": saved_total_tokens,
+                "by_model": by_model,
             }
+
+    def get_metrics(self) -> dict[str, Any]:
+        """Aggregates cache performance metrics including hits and tokens saved."""
+        return self.get_stats()
 
     def close(self) -> None:
         """Closes the active connection if open."""
